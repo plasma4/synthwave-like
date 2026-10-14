@@ -1,0 +1,128 @@
+<title>(some of) the SOLIDS</title>
+
+<canvas id=c
+    style="width:100vw;height:100vh;object-fit:cover;position:fixed;top:0;left:0;background:linear-gradient(#1b0b3a,#6a1b6e 40vh,#e8467c 68vh,#ffa94d)"></canvas>
+<z id=r style=position:fixed;inset:0;margin:0>
+    <script>
+        // lwk i really wanted to do code golf super hard but i didn't have enough time so oh well, this could probably reasonably be done under 1.5KiB if done hard enough :(((
+        // this is my first time sprinkling in personable comments like these asw :)
+        // 2kib is a nice challenge size tho and i hit it; i could definitely optimize more if i wanted to tho
+
+        // TODO get rid of all let decls during minification as needed
+        const CAMERA_DISTANCE = 12, CAMERA_TILT = .4, FILM_HEAL = .1, BLUR_SAMPLES = 8, BLUR_SPAN = .04, PARTICLE_COUNT = 50
+        let W, H, dpr, t,
+            focal, A = Array, gco = "globalCompositeOperation", alphaStr = "globalAlpha", { PI, cos, sin, random } = Math, ctx = c.getContext`2d`,
+            R = onresize = _ => { // resize handler, basic DPI-aware setup
+                W = innerWidth
+                H = innerHeight
+                dpr = devicePixelRatio
+                c.width = W * dpr
+                c.height = H * dpr
+                ctx.scale(dpr, dpr)//fresh after resize
+                focal = Math.min(W, H) * 2
+            },
+            // helpers
+            move = (point, size, offset) => point.map((v, i) => v * size + offset[i]),
+            // this fn rotates thru tunable yaw spin (x,z) and pitch
+            // honestly i dont really understand it TRIG SUCKS
+            /*
+                const x1 = x * cos(yaw) - z * sin(yaw)
+                const z1 = x * sin(yaw) + z * cos(yaw)
+                const y2 = y * cos(pitch) - z1 * sin(pitch)
+                const z2 = y * sin(pitch) + z1 * cos(pitch)
+                return [x1, y2, z2]
+            */
+            rotate = ([x, y, z], yaw, pitch) => [
+                x * cos(yaw) - z * sin(yaw),
+                y * cos(pitch) - (z = x * sin(yaw) + z * cos(yaw)) * sin(pitch),
+                y * sin(pitch) + z * cos(pitch),
+            ],
+            // "012 345" -> [[v0,v1,v2],[v3,v4,v5]] index access
+            makeFaces = (vertices, faces) =>
+                faces.split` `.map(face => [...face].map(n => vertices[n])),
+
+            // ok shapes time
+
+            // for the cube, vertex n's binary digits become its coordinates
+            // thats js how a cube works
+            cube = makeFaces(
+                [...A(8)].map((_, n) => [1, 2, 4].map(bit => (n & bit ? 1 : -1))),
+                "0132 4576 0154 2376 0264 1375", // z-, z+, y-, y+, x-, x+
+            ),
+            // apex and 3 corners on a circle r=1, that's 120deg (2pi/3 rad) apart -> ~2.094rad
+            // we want a balanced regular one, with some math h must equal sqrt(2), and some centroid stuff makes base y = sqrt(2)/4 -> ~0.35 and apex y = -3*sqrt(2)/4 -> ~-1.06 (canvas coords)
+            tetrahedron = makeFaces(
+                [[0, -1.06, 0], ...[0, 1, 2].map((k) => [cos(k * 2.094), 0.35, sin(k * 2.094)])],
+                "012 023 031 123", // every way to choose 3 of the 4 corners
+            )
+
+        // drawing time!
+        drawShape = (faces, place, opacity, t) => {
+            for (let face of faces) {
+                // this code looks way more familiar to me :p
+                ctx.beginPath()
+                for (let local of face) {
+                    let [x, y, z] = rotate(place(local), t / 5, CAMERA_TILT + 0.3 * t)
+                    let k = focal / (z + CAMERA_DISTANCE)
+                    ctx.lineTo(W / 2 + x * k, H / 2 + y * k) // first lineTo=moveTo functionally
+                }
+                // to give context, we're doing globalcomposite ops in frame() to invert stuff and do a bunch of other spooky trickery
+                // but the logic makes it so that faces erase a little while edges erase a lot
+                ctx.closePath()
+                ctx[alphaStr] = opacity / 8
+                ctx.fill()
+                ctx[alphaStr] = opacity
+                ctx.stroke()
+            }
+        },
+
+            particles = [...A(PARTICLE_COUNT)].map((_, i) => [
+                i % 2 ? tetrahedron : cube,
+                random(),//phase
+                random() * 314,// random angle,compass direction of launch
+                random() - 0.8,//random lift
+                0.08 + random() * 0.15//lives/sec
+            ]),
+            drawParticle = ([particleShape, particlePhase, initialAngle, upwardLift, particleSpeed], t, opacity) => {
+                let life = (t * particleSpeed + particlePhase) % 1,
+                    outwardDistance = 1 + life * 4,
+                    currentHeading = initialAngle + life * 2.5,
+                    particlePosition = [
+                        cos(currentHeading) * outwardDistance,
+                        upwardLift * outwardDistance + life * life * 4,
+                        sin(currentHeading) * outwardDistance,
+                    ]
+                drawShape(
+                    particleShape,
+                    point => move(rotate(point, t * 3 + initialAngle, t * 2 + initialAngle), .25, particlePosition),
+                    (1 - life) * opacity,
+                    t
+                )
+            },
+            frame = time => {
+                time /= 1e3
+                // repaint the dark film, only partly: old holes heal slowly -> long smeared trails
+
+                ctx[gco] = "source-over"
+                ctx[alphaStr] = FILM_HEAL
+                ctx.fillStyle = "#102"
+                ctx.fillRect(0, 0, W, H)
+
+                // from here on drawing ERASES
+                // the gradient is from the background
+                ctx[gco] = "destination-out"; // invert!
+                for (let s = 0; s < BLUR_SAMPLES; s++) {
+                    t = time - (s / BLUR_SAMPLES) * BLUR_SPAN
+                    // motion blur time! each particle drawn at different moments
+                    for (let particle of particles) drawParticle(particle, t, 0.6 / BLUR_SAMPLES)
+                }
+
+                const bars = [0, 3, 5].map((_, i) => (9 * i + t * (i ** PI + 98.3)) % 119)
+                // CRT rolling bar, faint glow, then scanlines!
+                r.style.background = `${bars.map(bar =>
+                    `linear-gradient(#0000 ${bar}%,#fff1 ${bar + 2}%,#0000 ${bar + 2}%)`)},radial-gradient(40vmax at 88vw 12vh,#fc61,#0000),repeating-linear-gradient(#0000 0 .1%,#0006 .4% .73%)`;
+                requestAnimationFrame(frame)
+            }
+        R()
+        requestAnimationFrame(frame)
+    </script>
